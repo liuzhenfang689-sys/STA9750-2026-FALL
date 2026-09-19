@@ -1,0 +1,14 @@
+---
+title: Zhenfang Liu
+---
+Hi! My name is **Zhenfang Liu**. I am a graduate student at **Baruch College** pursuing an M.S. in Business Analytics with a concentration in Data Analytics. 
+
+
+**My interests** include financial analytics, risk analytics, and data analytics.
+
+```{r}
+#| include: false
+1+1
+```
+--------------
+Last Updated: `r format(Sys.time(), "%A %m %d, %Y at %H:%M%p")`
