@@ -1,7 +1,288 @@
 
-  ---
-  title: "Mini-Project Placeholder"
-  ---
+# Netflix Viewing Data
+
   
-  This is a placeholder for STA9750 Mini-Project 1. Check back soon for more!
+## Task 1-3: Data Acquisition, Cleaning and Preparation
+```{r}
+  library(tidyverse)
+  library(rvest)
+
+load_netflix_data <- function(){
+
+  library(tidyverse)
+  library(rvest)
+  library(readxl)
+  library(fs)
   
+  data_dir <- path("data", "mp01")
+    
+  if(!dir_exists(data_dir)){
+    dir_create(data_dir, showWarnings=FALSE, recurse=TRUE)
+  }
+  
+  NETFLIX_URLS <- list(
+    `2023H1` = "https://about.netflix.com/news/what-we-watched-a-netflix-engagement-report",
+    `2023H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2023",
+    `2024H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2024",
+    `2024H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2024",
+    `2025H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2025",
+    `2025H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2025",
+    `2026H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2026"
+  )
+  
+  download_if_needed <- function(url, local){
+    if(!file_exists(local)){
+      download.file(url, local, quiet = TRUE, mode = "wb")
+    }
+    
+    return(local)
+  }
+    
+  NETFLIX_URLS |> 
+    map(read_html) |> 
+    map(html_element, xpath = "//a[contains(@href, '.xlsx')]") |> 
+    map_chr(html_attr, "href") |> 
+    enframe("period", "url") |> 
+   mutate(path = path(data_dir, paste0(period, ".xlsx")), 
+          path = map2(url, path, download_if_needed), 
+          data = map(path, read_excel, skip=3, na="*"), 
+          data = map(data, \(x) x |> mutate(`Release Date` = as.Date(`Release Date`)))) |>
+    unnest(data) |> 
+    select(-url, -path) |> 
+    mutate(year=str_sub(period, 1, 4), 
+           half=str_sub(period, start=6), 
+           period_start = make_date(year, if_else(half==1, 1, 7), 1), 
+           period_end = make_date(year, if_else(half==1, 6, 12), if_else(half==1, 30, 31))) |> 
+    filter(!is.na(`Hours Viewed`)) |> 
+    mutate(live_event = !is.na(Runtime) & str_detect(Runtime, "\\d+:\\d+\\*"), 
+           clean_time = str_remove(Runtime, fixed("*")),
+           Runtime = 60 * hour(hm(clean_time)) + minute(hm(clean_time))) |>
+    select(-clean_time) |>
+    mutate(Runtime = coalesce(Runtime, mean(Runtime, na.rm=TRUE)), 
+           .by=Title, 
+           Title = stringi::stri_trans_general(Title, "Latin-ASCII"),
+           Title = str_remove(Title, " // .*"), 
+           Title = str_remove(Title, "[^[:ascii:]].*"), 
+           Title = str_trim(Title)) |>
+    filter_out(Title == "") |>
+    select(year, 
+           period, 
+           period_start, 
+           period_end, 
+           Title, 
+           -half, 
+           Runtime, 
+           Views, 
+           `Hours Viewed`, 
+           `Release Date`,
+           `Available Globally?`, 
+           live_event)
+}
+
+NETFLIX_DATA <- load_netflix_data() |>
+   rename(title = Title,
+          runtime = Runtime,
+          views = Views,
+          hours_viewed = `Hours Viewed`,
+          release_date = `Release Date`,
+          available_globally = `Available Globally?`) |>
+  mutate(
+    year = as.integer(year),
+    available_globally = available_globally =="Yes"
+  )
+```
+
+## Task 4: Initial EDA Pass
+```{r}
+glimpse(NETFLIX_DATA)
+summary(NETFLIX_DATA)
+```
+Based on the summary NETFLIX DATA, we can see that dataset contains 61892 records from year 2023 to 2026. And the runtime, views, and the release_date are missing 13085, 18198, and 35251 values respectively, especially release_date is missing for about 57% of records. This would use fewer records if we want to analyze the popularity based on the release year.
+
+## Task 5: Exploratory Questions - Inline Values
+
+### Question 1
+```{r}
+date_range <- NETFLIX_DATA |>
+  summarize(
+    start = min(period_start, na.rm = TRUE),
+    end = max(period_end, na.rm = TRUE)
+  )
+
+date_range
+```
+The dataset covers the period from `r date_range$start` to `r date_range$end`.
+
+### Question 2
+```{r}
+title_count <- NETFLIX_DATA |>
+  summarize(n_titles = n_distinct(title))
+```
+The dataset covers `r title_count$n_titles` different shows and movies.
+
+### Question 3
+```{r}
+bridgerton_hours <- NETFLIX_DATA |>
+  filter(str_detect(title, "Bridgerton")) |>
+  summarize(total_hours = sum(hours_viewed, na.rm = TRUE)) 
+bridgerton_hours
+```
+A total of `r format(bridgerton_hours$total_hours, scientific = FALSE, big.mark = ",")` hours have been spent watching shows from the Bridgerton universe.
+
+### Questio 4
+```{r}
+stranger_hours <- NETFLIX_DATA |>
+  filter(str_detect(title, "Stranger Things")) |>
+  filter_out(str_detect(title, "Beyond Stranger Things")) |>
+  filter_out(str_detect(title, "Fireplace")) |>
+  summarize(total_hours = sum(hours_viewed, na.rm = TRUE))
+
+stranger_hours
+```
+
+A total of `r format(stranger_hours$total_hours, scientific = FALSE, big.mark = ",")` hours have been spent watching the five seasons of Stranger Things.
+
+### Question 5
+```{r}
+top10_share <- NETFLIX_DATA |>
+  filter(period == "2026H1") |>
+  arrange(desc(hours_viewed)) |>
+  summarize(
+    percentage = 100 * sum(hours_viewed[1:10], na.rm = TRUE) /
+      sum(hours_viewed, na.rm = TRUE)
+  )
+
+top10_share
+```
+In 2026H1, the percentage of total watch time spent on the Top 10 titles was about `r round(top10_share$percentage, 1)` %.
+
+### Question 6
+```{r}
+global_share <- NETFLIX_DATA |>
+  summarize(
+    by_title = n_distinct(title[available_globally %in% TRUE]) / n_distinct(title),
+    by_hours = sum(hours_viewed[available_globally %in% TRUE], na.rm = TRUE) /
+      sum(hours_viewed, na.rm = TRUE)
+  )
+
+global_share
+```
+About `r round(100 * global_share$by_title, 1)`% of titles are globally available and `r round(100 * global_share$by_hours, 1)`% of the total hours viewed.
+
+## Task 6: Exploratory Questions - Table Answers
+
+### Question 1
+```{r}
+NETFLIX_DATA |>
+  group_by(period, title) |>
+  summarize(hours = sum(hours_viewed, na.rm = TRUE), .groups = "drop_last") |>
+  mutate(share = hours / sum(hours)) |>
+  slice_max(hours, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  gt::gt() |>
+  gt::tab_header(title = "Top Title in Each Period") |>
+  gt::fmt_number(columns = hours, decimals = 0) |>
+  gt::fmt_percent(columns = share, decimals = 1)
+```
+
+### Question 2
+```{r}
+NETFLIX_DATA |>
+  group_by(period) |>
+  summarize(
+    titles = n_distinct(title),
+    total_runtime = sum(runtime, na.rm = TRUE)
+  ) |>
+  gt::gt() |>
+  gt::tab_header(title = "Catalog Size by Period") |>
+    gt::fmt_number(columns = c(titles, total_runtime), decimals = 0) |>
+  gt::cols_label(titles = "Titles", total_runtime = "Total runtime (minutes)")
+```
+
+### Question 3
+```{r}
+NETFLIX_DATA |>
+  filter(!is.na(hours_viewed)) |>
+  group_by(title) |>
+  summarize(
+    periods = n_distinct(period),
+    average_hours = mean(hours_viewed),
+    lowest_hours = min(hours_viewed)
+  ) |>
+  filter(periods == 7) |>
+  slice_max(lowest_hours, n = 10, with_ties = FALSE) |>
+  gt::gt() |>
+  gt::tab_header(title = "Consistently Popular Titles") |>
+  gt::fmt_number(columns = c(average_hours, lowest_hours), decimals = 0)
+```
+
+### Question 4
+```{r}
+NETFLIX_DATA |>
+  mutate(type = case_when(
+    str_detect(title, "Season") | runtime > 240 ~ "Show",
+    is.na(runtime) ~ "Unknown",
+    .default = "Movie"
+  )) |>
+  group_by(period, type) |>
+  summarize(hours = sum(hours_viewed, na.rm = TRUE), .groups = "drop_last") |>
+  mutate(share = hours / sum(hours)) |>
+  ungroup() |>
+  select(period, type, share) |>
+  pivot_wider(names_from = type, values_from = share) |>
+  gt::gt() |>
+  gt::tab_header(title = "Watch Time by Shows and Movies") |>
+  gt::fmt_percent(columns = c(Show, Movie, Unknown), decimals = 1)
+```
+
+### Question 5
+```{r}
+NETFLIX_DATA |>
+  mutate(type = if_else(live_event, "Live", "Pre-taped")) |>
+  group_by(type) |>
+  summarize(
+    titles = n(),
+    average_hours = mean(hours_viewed, na.rm = TRUE),
+    top_tier_hours = mean(
+      hours_viewed[hours_viewed >= quantile(hours_viewed, 0.9, na.rm = TRUE)],
+      na.rm = TRUE
+    )
+  ) |>
+  gt::gt() |>
+  gt::tab_header(title = "Live vs. Pre-taped Content") |>
+  gt::fmt_number(columns = c(titles, average_hours, top_tier_hours), decimals = 0)
+```
+
+### Calculation for Task 7
+```{r}
+memo_shares <- NETFLIX_DATA |>
+  filter(period == "2026H1") |>
+  mutate(type = case_when(
+    str_detect(title, "Season") | runtime > 240 ~ "Show",
+    is.na(runtime) ~ "Unknown",
+    .default = "Movie"
+  )) |>
+  group_by(type) |>
+  summarize(hours = sum(hours_viewed, na.rm = TRUE)) |>
+  mutate(pct = 100 * hours / sum(hours))
+```
+
+## Task 7: Corporate Strategy Memo
+
+**To: Netflix Management**
+
+According to the dataset and table, we have a few content recommendations for the coming year 2027 based on wattime trends from 2023 H1 to 2026 H1.
+
+First, we found that the watch time percentage for shows was consistently higher than for movies from 2023 H1 to 2026 H1. For example, in 2026 H1, watch time for shows was `r round(memo_shares$pct[memo_shares$type == "Show"], 1) `%, while movies only made up `r round(memo_shares$pct[memo_shares$type =="Movie"], 1) `%.Because shows tend to generate higher viewership, I suggest Netflix release more shows by 2027.
+
+Second, in 2026 H1, the Top 10 title is for only about `r round(top10_share$percentage, 1) `% of total watch time. This shows that viewers are not just watching popular trending title; instead, they are watching content based on their personal preference across the Netflix platform. So, Netflix should monitor which specific show genres appeal to different viewer segments and invest in a wider variety of show types.
+
+Also, we need to notice a limitation that is higher watch time doesn't mean higher profit, since production costs for shows can be high. So, we should also consider production costs and revenue metrics.
+
+
+
+::: {.callout-note title="AI Usage Statement" collapse="true"}
+
+ChatGPT was used to help write the code in this project, and it also helped me discuss the project structure, and brainstorm ideas for the final prompt. I wrote the text part by myself. 
+
+:::
